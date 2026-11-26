@@ -1,0 +1,51 @@
+name: refresh-google-jwks
+
+on:
+  schedule:
+    - cron: "17 */6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: refresh-google-jwks
+  cancel-in-progress: true
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch Google JWKS
+        run: |
+          set -euo pipefail
+          curl -fsS --retry 3 --max-time 30 https://www.googleapis.com/oauth2/v3/certs -o /tmp/certs.json
+          python3 - <<'PY'
+          import datetime, json
+          data = json.load(open('/tmp/certs.json'))
+          keys = [k for k in data.get('keys', [])
+                  if k.get('kty') == 'RSA' and k.get('kid') and k.get('n') and k.get('e')]
+          if not keys:
+              raise SystemExit('no usable keys in google certs')
+          now = datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+          with open('jwks.json', 'w') as fp:
+              json.dump({'generated_at': now, 'keys': keys}, fp, indent=2)
+              fp.write('\n')
+          print('keys:', len(keys))
+          PY
+
+      - name: Commit
+        run: |
+          set -euo pipefail
+          test -s jwks.json
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add jwks.json
+          if git diff --cached --quiet; then
+            echo "no change"
+            exit 0
+          fi
+          git commit -m "refresh google jwks $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          git push
