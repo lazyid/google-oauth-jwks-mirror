@@ -1,4 +1,4 @@
-name: refresh-google-jwks
+name: refresh-provider-jwks
 
 on:
   schedule:
@@ -9,7 +9,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: refresh-google-jwks
+  group: refresh-provider-jwks
   cancel-in-progress: true
 
 jobs:
@@ -17,35 +17,46 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: Fetch Google JWKS
+      - name: Fetch provider JWKS
         run: |
           set -euo pipefail
-          curl -fsS --retry 3 --max-time 30 https://www.googleapis.com/oauth2/v3/certs -o /tmp/certs.json
+          curl -fsS --retry 3 --max-time 30 https://www.googleapis.com/oauth2/v3/certs -o /tmp/google.json
+          curl -fsS --retry 3 --max-time 30 https://api.line.me/oauth2/v2.1/certs -o /tmp/line.json
           python3 - <<'PY'
           import datetime, json
-          data = json.load(open('/tmp/certs.json'))
-          keys = [k for k in data.get('keys', [])
-                  if k.get('kty') == 'RSA' and k.get('kid') and k.get('n') and k.get('e')]
-          if not keys:
-              raise SystemExit('no usable keys in google certs')
-          now = datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
-          with open('jwks.json', 'w') as fp:
-              json.dump({'generated_at': now, 'keys': keys}, fp, indent=2)
-              fp.write('\n')
-          print('keys:', len(keys))
-          PY
 
+          now = datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+
+          google = json.load(open('/tmp/google.json'))
+          google_keys = [k for k in google.get('keys', [])
+                         if k.get('kty') == 'RSA' and k.get('kid') and k.get('n') and k.get('e')]
+          if not google_keys:
+              raise SystemExit('no usable keys in google certs')
+
+          line = json.load(open('/tmp/line.json'))
+          line_keys = [k for k in line.get('keys', [])
+                       if k.get('kty') == 'EC' and k.get('crv') == 'P-256'
+                       and k.get('kid') and k.get('x') and k.get('y')]
+          if not line_keys:
+              raise SystemExit('no usable keys in line certs')
+
+          for name, keys in (('jwks.json', google_keys), ('line_jwks.json', line_keys)):
+              with open(name, 'w') as fp:
+                  json.dump({'generated_at': now, 'keys': keys}, fp, indent=2)
+                  fp.write('\n')
+              print(name, len(keys))
+          PY
       - name: Commit
         run: |
           set -euo pipefail
           test -s jwks.json
+          test -s line_jwks.json
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add jwks.json
+          git add jwks.json line_jwks.json
           if git diff --cached --quiet; then
             echo "no change"
             exit 0
           fi
-          git commit -m "refresh google jwks $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          git commit -m "refresh provider jwks $(date -u +%Y-%m-%dT%H:%M:%SZ)"
           git push
